@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Fighting Game</title>
+    <style>
+      body { 
+        margin: 0; 
+        overflow: hidden;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        background: #000;
+        font-family: Arial, sans-serif;
+      }
+      canvas { 
+        display: block;
+        background: #000;
+        width: 100vw;
+        height: 100vh;
+        object-fit: cover;
+      }
+      #gameUI {
+        position: fixed;
+        top: 20px;
+        left: 20px;
+        color: #fff;
+        font-size: 24px;
+        text-shadow: 0 0 10px #0ff;
+        z-index: 100;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="gameUI">
+      FPS: <span id="fps">0</span>
+    </div>
+    <canvas id="gameCanvas"></canvas>
+    <script>
+      class Game {
+        constructor() {
+          this.canvas = document.getElementById('gameCanvas');
+          this.ctx = this.canvas.getContext('2d');
+          
+          // Set canvas dimensions to window size
+          this.resizeCanvas();
+          window.addEventListener('resize', () => this.resizeCanvas());
+          
+          // Game state
+          this.state = {
+            p1Health: 100,
+            p2Health: 100,
+            gameOver: false,
+            paused: false,
+            lastTime: 0,
+            roundTimer: 99,
+            hitStop: 0,
+            frameCount: 0,
+            lastFpsUpdate: 0
+          };
+
+          // Input state
+          this.keys = {
+            // Player 1
+            w: false, a: false, s: false, d: false,
+            j: false, i: false, o: false, u: false,
+            // Player 2
+            ArrowUp: false, ArrowLeft: false, ArrowDown: false, ArrowRight: false,
+            numpad1: false, numpad2: false, numpad3: false, numpad5: false
+          };
+
+          // Dash state
+          this.dashState = {
+            p1: { lastTap: 0, dashActive: false, dashTimer: 0 },
+            p2: { lastTap: 0, dashActive: false, dashTimer: 0 }
+          };
+
+          // Motion input tracking
+          this.motionInput = {
+            p1: {
+              buffer: [],
+              lastInput: 5,
+              lastInputTime: 0,
+              inputTimeout: 0.5,
+              bufferSize: 10
+            },
+            p2: {
+              buffer: [],
+              lastInput: 5,
+              lastInputTime: 0,
+              inputTimeout: 0.5,
+              bufferSize: 10
+            }
+          };
+
+          // Bind event handlers
+          this.handleKeyDown = this.handleKeyDown.bind(this);
+          this.handleKeyUp = this.handleKeyUp.bind(this);
+        }
+
+        init() {
+          // Initialize players
+          this.player1 = {
+            x: this.canvas.width * 0.2,
+            y: this.canvas.height * 0.8,
+            width: 60,
+            height: 100,
+            facingRight: true,
+            state: 'standing',
+            velocity: { x: 0, y: 0 },
+            onGround: true,
+            health: 100,
+            hitbox: null,
+            hurtbox: null,
+            blocking: false,
+            jumpSquat: 0,
+            projectiles: [],
+            attacks: {
+              punch: { 
+                active: false, 
+                cooldown: 0, 
+                damage: 26, 
+                range: 40,
+                startup: 6,
+                activeFrames: 3,
+                recovery: 7,
+                onBlock: 0,
+                onHit: 3
+              },
+              kick: { active: false, cooldown: 0, damage: 15, range: 50 },
+              slash: { active: false, cooldown: 0, damage: 20, range: 60 },
+              dust: { active: false, cooldown: 0, damage: 25, range: 70 },
+              fireball: { active: false, cooldown: 0, damage: 30, range: 100 },
+              fireball_back: { active: false, cooldown: 0, damage: 30, range: 100 },
+              dragon_punch: { active: false, cooldown: 0, damage: 40, range: 60 },
+              super: { active: false, cooldown: 0, damage: 50, range: 150 }
+            }
+          };
+
+          this.player2 = {
+            x: this.canvas.width * 0.8,
+            y: this.canvas.height * 0.8,
+            width: 60,
+            height: 100,
+            facingRight: false,
+            state: 'standing',
+            velocity: { x: 0, y: 0 },
+            onGround: true,
+            health: 100,
+            hitbox: null,
+            hurtbox: null,
+            blocking: false,
+            jumpSquat: 0,
+            projectiles: [],
+            attacks: {
+              punch: { 
+                active: false, 
+                cooldown: 0, 
+                damage: 26, 
+                range: 40,
+                startup: 6,
+                activeFrames: 3,
+                recovery: 7,
+                onBlock: 0,
+                onHit: 3
+              },
+              kick: { active: false, cooldown: 0, damage: 15, range: 50 },
+              slash: { active: false, cooldown: 0, damage: 20, range: 60 },
+              dust: { active: false, cooldown: 0, damage: 25, range: 70 },
+              fireball: { active: false, cooldown: 0, damage: 30, range: 100 },
+              fireball_back: { active: false, cooldown: 0, damage: 30, range: 100 },
+              dragon_punch: { active: false, cooldown: 0, damage: 40, range: 60 },
+              super: { active: false, cooldown: 0, damage: 50, range: 150 }
+            }
+          };
+
+          // Set up input handlers
+          window.addEventListener('keydown', this.handleKeyDown);
+          window.addEventListener('keyup', this.handleKeyUp);
+
+          // Start game loop
+          this.gameLoop();
+        }
+
+        handleKeyDown(e) {
+          if (e.key in this.keys) {
+            this.keys[e.key] = true;
+            // Handle double tap dash
+            if (e.key === 'a' || e.key === 'd') {
+              const currentTime = performance.now() / 1000;
+              if (currentTime - this.dashState.p1.lastTap < 0.2) {
+                this.dashState.p1.dashActive = true;
+                this.dashState.p1.dashTimer = 0.2; // Dash lasts for 0.2 seconds
+              }
+              this.dashState.p1.lastTap = currentTime;
+            }
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+              const currentTime = performance.now() / 1000;
+              if (currentTime - this.dashState.p2.lastTap < 0.2) {
+                this.dashState.p2.dashActive = true;
+                this.dashState.p2.dashTimer = 0.2; // Dash lasts for 0.2 seconds
+              }
+              this.dashState.p2.lastTap = currentTime;
+            }
+          }
+          // Fix pause key detection
+          if (e.key === 'Shift' && e.location === 2) { // Right Shift
+            this.state.paused = !this.state.paused;
+          }
+        }
+
+        handleKeyUp(e) {
+          if (e.key in this.keys) {
+            this.keys[e.key] = false;
+            // Reset dash state when key is released
+            if (e.key === 'a' || e.key === 'd') {
+              this.dashState.p1.dashActive = false;
+            }
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+              this.dashState.p2.dashActive = false;
+            }
+          }
+        }
+
+        update(deltaTime) {
+          if (this.state.paused) return;
+
+          // Update FPS counter
+          this.state.frameCount++;
+          if (performance.now() / 1000 - this.state.lastFpsUpdate >= 1) {
+            const fps = this.state.frameCount;
+            document.getElementById('fps').textContent = fps;
+            this.state.frameCount = 0;
+            this.state.lastFpsUpdate = performance.now() / 1000;
+          }
+
+          // Update players
+          this.updatePlayer(this.player1, this.player2, deltaTime, true);
+          this.updatePlayer(this.player2, this.player1, deltaTime, false);
+
+          // Update round timer
+          this.state.roundTimer -= deltaTime;
+          if (this.state.roundTimer <= 0) {
+            this.endRound();
+          }
+
+          // Check for game over
+          if (this.player1.health <= 0 || this.player2.health <= 0) {
+            this.state.gameOver = true;
+          }
+        }
+
+        updatePlayer(player, opponent, deltaTime, isPlayer1) {
+          const motionInput = isPlayer1 ? this.motionInput.p1 : this.motionInput.p2;
+          const currentTime = performance.now() / 1000;
+
+          // Clear old inputs
+          if (currentTime - motionInput.lastInputTime > motionInput.inputTimeout) {
+            motionInput.buffer = [];
+          }
+
+          // Get current input direction
+          let currentInput = 5; // Neutral
+          if (isPlayer1) {
+            if (this.keys.w) currentInput = 8; // Up
+            if (this.keys.s) currentInput = 2; // Down
+            if (this.keys.a) currentInput = 4; // Left
+            if (this.keys.d) currentInput = 6; // Right
+            // Diagonal inputs
+            if (this.keys.w && this.keys.a) currentInput = 7;
+            if (this.keys.w && this.keys.d) currentInput = 9;
+            if (this.keys.s && this.keys.a) currentInput = 1;
+            if (this.keys.s && this.keys.d) currentInput = 3;
+
+            // Handle basic attacks
+            if (this.keys.j && !Object.values(player.attacks).some(a => a.active)) this.startAttack(player, 'punch');
+            if (this.keys.i && !Object.values(player.attacks).some(a => a.active)) this.startAttack(player, 'kick');
+            if (this.keys.o && !Object.values(player.attacks).some(a => a.active)) this.startAttack(player, 'slash');
+            if (this.keys.u && !Object.values(player.attacks).some(a => a.active)) this.startAttack(player, 'dust');
+          } else {
+            if (this.keys.ArrowUp) currentInput = 8;
+            if (this.keys.ArrowDown) currentInput = 2;
+            if (this.keys.ArrowLeft) currentInput = 4;
+            if (this.keys.ArrowRight) currentInput = 6;
+            // Diagonal inputs
+            if (this.keys.ArrowUp && this.keys.ArrowLeft) currentInput = 7;
+            if (this.keys.ArrowUp && this.keys.ArrowRight) currentInput = 9;
+            if (this.keys.ArrowDown && this.keys.ArrowLeft) currentInput = 1;
+            if (this.keys.ArrowDown && this.keys.ArrowRight) currentInput = 3;
+
+            // Handle basic attacks
+            if (this.keys.numpad1 && !Object.values(player.attacks).some(a => a.active)) this.startAttack(player, 'punch');
+            if (this.keys.numpad2 && !Object.values(player.attacks).some(a => a.active)) this.startAttack(player, 'kick');
+            if (this.keys.numpad3 && !Object.values(player.attacks).some(a => a.active)) this.startAttack(player, 'slash');
+            if (this.keys.numpad4 && !Object.values(player.attacks).some(a => a.active)) this.startAttack(player, 'dust');
+          }
+
+          // Add new input to buffer if it's different from last input
+          if (currentInput !== motionInput.lastInput) {
+            motionInput.buffer.push(currentInput);
+            motionInput.lastInput = currentInput;
+            motionInput.lastInputTime = currentTime;
+
+            // Keep buffer size limited
+            if (motionInput.buffer.length > motionInput.bufferSize) {
+              motionInput.buffer.shift();
+            }
+
+            // Check for special moves
+            const inputString = motionInput.buffer.join('');
+            
+            // Check for special moves with lenient pattern matching
+            if (isPlayer1) {
+              if (this.keys.u) {
+                // Fireball (236) - allows for 236, 26, 2366, etc.
+                if (inputString.includes('2') && inputString.includes('6')) {
+                  this.startAttack(player, 'fireball');
+                  motionInput.buffer = [];
+                }
+                // Dragon Punch (623) - allows for 623, 63, 6233, etc.
+                else if (inputString.includes('6') && inputString.includes('3')) {
+                  this.startAttack(player, 'dragon_punch');
+                  motionInput.buffer = [];
+                }
+                // Super (41236) - allows for 41236, 4236, 412366, etc.
+                else if (inputString.includes('4') && inputString.includes('2') && inputString.includes('6')) {
+                  this.startAttack(player, 'super');
+                  motionInput.buffer = [];
+                }
+              }
+            } else {
+              if (this.keys.numpad5) {
+                // Fireball (236) - allows for 236, 26, 2366, etc.
+                if (inputString.includes('2') && inputString.includes('6')) {
+                  this.startAttack(player, 'fireball');
+                  motionInput.buffer = [];
+                }
+                // Dragon Punch (623) - allows for 623, 63, 6233, etc.
+                else if (inputString.includes('6') && inputString.includes('3')) {
+                  this.startAttack(player, 'dragon_punch');
+                  motionInput.buffer = [];
+                }
+                // Super (41236) - allows for 41236, 4236, 412366, etc.
+                else if (inputString.includes('4') && inputString.includes('2') && inputString.includes('6')) {
+                  this.startAttack(player, 'super');
+                  motionInput.buffer = [];
+                }
+              }
+            }
+          }
+
+          const dashState = isPlayer1 ? this.dashState.p1 : this.dashState.p2;
+          
+          // Update dash timer
+          if (dashState.dashTimer > 0) {
+            dashState.dashTimer -= deltaTime;
+            if (dashState.dashTimer <= 0) {
+              dashState.dashActive = false;
+            }
+          }
+          
+          // Movement
+          if (isPlayer1) {
+            // Check for crouching (only while on ground)
+            const isCrouching = this.keys.s && player.onGround;
+            player.state = isCrouching ? 'crouching' : (player.onGround ? 'standing' : 'jumping');
+            
+            // Handle movement
+            if (this.keys.a) {
+              player.velocity.x = -5;
+              player.facingRight = false;
+              // Check if blocking (holding back)
+              if (opponent.x > player.x) {
+                player.blocking = true;
+                player.state = 'blocking';
+              }
+            } else if (this.keys.d) {
+              player.velocity.x = 5;
+              player.facingRight = true;
+              player.blocking = false;
+            } else {
+              player.velocity.x = 0;
+              // Only stop blocking if not crouching or in air
+              if (!isCrouching && player.onGround) {
+                player.blocking = false;
+              }
+            }
+
+            // Sprint
+            if (this.keys['[']) {
+              player.velocity.x = player.facingRight ? 15 : -15;
+            }
+
+            // Jumping with jump squat
+            if (this.keys.w && player.onGround && player.jumpSquat === 0) {
+              player.jumpSquat = 4;
+              player.state = 'jumpSquat';
+            }
+          } else {
+            // Check for crouching (only while on ground)
+            const isCrouching = this.keys.ArrowDown && player.onGround;
+            player.state = isCrouching ? 'crouching' : (player.onGround ? 'standing' : 'jumping');
+            
+            // Handle movement
+            if (this.keys.ArrowLeft) {
+              player.velocity.x = -5;
+              player.facingRight = false;
+              // Check if blocking (holding back)
+              if (opponent.x > player.x) {
+                player.blocking = true;
+                player.state = 'blocking';
+              }
+            } else if (this.keys.ArrowRight) {
+              player.velocity.x = 5;
+              player.facingRight = true;
+              player.blocking = false;
+            } else {
+              player.velocity.x = 0;
+              // Only stop blocking if not crouching or in air
+              if (!isCrouching && player.onGround) {
+                player.blocking = false;
+              }
+            }
+
+            // Sprint
+            if (this.keys[']']) {
+              player.velocity.x = player.facingRight ? 15 : -15;
+            }
+
+            // Jumping with jump squat
+            if (this.keys.ArrowUp && player.onGround && player.jumpSquat === 0) {
+              player.jumpSquat = 4;
+              player.state = 'jumpSquat';
+            }
+          }
+
+          // Handle jump squat
+          if (player.jumpSquat > 0) {
+            player.jumpSquat--;
+            if (player.jumpSquat === 0) {
+              player.velocity.y = -15;
+              player.onGround = false;
+              player.state = 'jumping';
+            }
+          }
+
+          // Apply gravity
+          if (!player.onGround) {
+            player.velocity.y += 0.8;
+          }
+
+          // Update position
+          player.x += player.velocity.x;
+          player.y += player.velocity.y;
+
+          // Fix ground collision
+          const groundY = this.canvas.height * 0.8; // Match the mountain ground level
+          if (player.y > groundY) {
+            player.y = groundY;
+            player.velocity.y = 0;
+            player.onGround = true;
+            if (!player.blocking) {
+              player.state = 'standing';
+            }
+          }
+
+          // Screen bounds
+          if (player.x < 0) player.x = 0;
+          if (player.x > this.canvas.width - player.width) {
+            player.x = this.canvas.width - player.width;
+          }
+
+          // Update attack states and cooldowns
+          Object.values(player.attacks).forEach(attack => {
+            if (attack.active) {
+              attack.cooldown -= deltaTime;
+              if (attack.cooldown <= 0) {
+                attack.active = false;
+                player.state = player.onGround ? 'standing' : 'jumping';
+              }
+            }
+          });
+
+          // Update hitboxes and hurtboxes
+          this.updateHitboxes(player, opponent);
+
+          // Update projectiles
+          player.projectiles = player.projectiles.filter(projectile => {
+            // Update position
+            projectile.x += projectile.velocity.x;
+            projectile.y += projectile.velocity.y;
+
+            // Check for collision with opponent
+            if (this.isColliding(projectile, opponent.hurtbox)) {
+              this.handleHit(player, opponent, { damage: projectile.damage });
+              return false;
+            }
+
+            // Remove if off screen
+            return projectile.x > 0 && 
+                   projectile.x < this.canvas.width && 
+                   projectile.y > 0 && 
+                   projectile.y < this.canvas.height;
+          });
+        }
+
+        startAttack(player, attackType) {
+          const attack = player.attacks[attackType];
+          if (!attack) return; // Guard against invalid attack types
+          
+          // Check if any attack is currently active
+          const hasActiveAttack = Object.values(player.attacks).some(a => a.active);
+          if (hasActiveAttack) return; // Don't start new attack if one is active
+          
+          attack.active = true;
+          // Set cooldown based on frame data
+          if (attackType === 'punch') {
+            attack.cooldown = (attack.startup + attack.activeFrames + attack.recovery) / 60; // Convert frames to seconds
+          } else {
+            attack.cooldown = 0.5; // Default cooldown for other attacks
+          }
+          player.state = 'attacking';
+
+          // Special move effects
+          switch (attackType) {
+            case 'fireball':
+              // Create fireball projectile
+              player.projectiles.push({
+                x: player.facingRight ? player.x + player.width : player.x,
+                y: player.y + player.height/2,
+                width: 30,
+                height: 30,
+                velocity: { x: player.facingRight ? 15 : -15, y: 0 },
+                damage: attack.damage,
+                type: 'fireball'
+              });
+              break;
+            case 'fireball_back':
+              // Create back fireball projectile
+              player.projectiles.push({
+                x: player.facingRight ? player.x + player.width : player.x,
+                y: player.y + player.height/2,
+                width: 30,
+                height: 30,
+                velocity: { x: player.facingRight ? -15 : 15, y: 0 },
+                damage: attack.damage,
+                type: 'fireball'
+              });
+              break;
+            case 'dragon_punch':
+              // Dragon punch has upward momentum
+              player.velocity.y = -10;
+              player.onGround = false;
+              // Add visual effect
+              player.projectiles.push({
+                x: player.facingRight ? player.x + player.width : player.x,
+                y: player.y,
+                width: 40,
+                height: 60,
+                velocity: { x: player.facingRight ? 10 : -10, y: -15 },
+                damage: attack.damage,
+                type: 'dragon_punch'
+              });
+              break;
+            case 'super':
+              // Super move has both horizontal and vertical momentum
+              player.velocity.x = player.facingRight ? 15 : -15;
+              player.velocity.y = -5;
+              player.onGround = false;
+              // Add visual effect
+              player.projectiles.push({
+                x: player.facingRight ? player.x + player.width : player.x,
+                y: player.y,
+                width: 60,
+                height: 80,
+                velocity: { x: player.facingRight ? 20 : -20, y: -10 },
+                damage: attack.damage,
+                type: 'super'
+              });
+              break;
+          }
+        }
+
+        updateHitboxes(player, opponent) {
+          // Update player's hitbox based on attack
+          let activeAttack = null;
+          Object.entries(player.attacks).forEach(([type, attack]) => {
+            if (attack.active) {
+              activeAttack = { type, ...attack };
+            }
+          });
+
+          if (activeAttack) {
+            const hitboxX = player.facingRight ? 
+              player.x + player.width : 
+              player.x - activeAttack.range;
+            
+            // Adjust hitbox based on attack type
+            let hitboxY = player.y + (player.state === 'crouching' ? player.height/2 : player.height/4);
+            let hitboxHeight = 30;
+            let attackType = 'mid'; // Default to mid attack
+            
+            switch (activeAttack.type) {
+              case 'dust':
+                // Dust attack has a larger hitbox that extends upward
+                hitboxY = player.y;
+                hitboxHeight = player.height;
+                attackType = 'low';
+                break;
+              case 'slash':
+                // Slash attack has a diagonal hitbox
+                hitboxY = player.y;
+                hitboxHeight = player.height;
+                attackType = 'overhead';
+                break;
+              case 'kick':
+                attackType = 'low';
+                break;
+              case 'punch':
+                // Punch attack is now a mid attack with higher hitbox
+                hitboxY = player.y + (player.state === 'crouching' ? player.height/2 : player.height/4);
+                hitboxHeight = 30;
+                attackType = 'mid';
+                break;
+            }
+
+            player.hitbox = {
+              x: hitboxX,
+              y: hitboxY,
+              width: activeAttack.range,
+              height: hitboxHeight,
+              attackType: attackType
+            };
+          } else {
+            player.hitbox = null;
+          }
+
+          // Update player's hurtbox
+          const isCrouching = player.state === 'crouching';
+          player.hurtbox = {
+            x: player.x + 10,
+            y: player.y + (isCrouching ? player.height/2 : 10),
+            width: player.width - 20,
+            height: (isCrouching ? player.height/2 : player.height) - 20
+          };
+
+          // Check for hits
+          if (player.hitbox && this.isColliding(player.hitbox, opponent.hurtbox)) {
+            this.handleHit(player, opponent, activeAttack);
+          }
+        }
+
+        handleHit(attacker, defender, attack) {
+          if (this.state.hitStop > 0) return;
+
+          // Check if defender is blocking
+          if (defender.blocking) {
+            // Determine if block is successful based on attack type and block state
+            const isCrouching = defender.state === 'crouching';
+            const isStanding = defender.state === 'standing' || defender.state === 'blocking';
+            const isInAir = !defender.onGround;
+            
+            let blockSuccessful = false;
+            switch (attack.type) {
+              case 'dust':
+              case 'kick':
+                // Low attacks are blocked by crouching or air block
+                blockSuccessful = isCrouching || isInAir;
+                break;
+              case 'slash':
+                // Overhead attacks are blocked by standing or air block
+                blockSuccessful = isStanding || isInAir;
+                break;
+              case 'punch':
+                // Mid attacks are blocked by standing or air block
+                blockSuccessful = isStanding || isInAir;
+                break;
+              default:
+                // Special moves are treated as mid attacks
+                blockSuccessful = isStanding || isInAir;
+            }
+
+            if (blockSuccessful) {
+              // Block successful
+              defender.health -= attack.damage * 0.1; // 10% chip damage
+              this.state.hitStop = 0.05; // Shorter hitstop on block
+              defender.velocity.x = defender.facingRight ? 2 : -2; // Small pushback
+              defender.state = 'blocking';
+              // Apply frame advantage on block
+              if (attack.type === 'punch') {
+                defender.velocity.x = defender.facingRight ? attack.onBlock : -attack.onBlock;
+              }
+            } else {
+              // Block failed - treat as normal hit
+              defender.health -= attack.damage;
+              this.state.hitStop = 0.1;
+              defender.velocity.x = attacker.facingRight ? 5 : -5;
+              defender.velocity.y = -5;
+              defender.onGround = false;
+              defender.state = 'hitstun';
+              // Apply frame advantage on hit
+              if (attack.type === 'punch') {
+                defender.velocity.x = attacker.facingRight ? attack.onHit : -attack.onHit;
+              }
+            }
+          } else {
+            // Normal hit
+            defender.health -= attack.damage;
+            this.state.hitStop = 0.1;
+            defender.velocity.x = attacker.facingRight ? 5 : -5;
+            defender.velocity.y = -5;
+            defender.onGround = false;
+            defender.state = 'hitstun';
+            // Apply frame advantage on hit
+            if (attack.type === 'punch') {
+              defender.velocity.x = attacker.facingRight ? attack.onHit : -attack.onHit;
+            }
+          }
+        }
+
+        isColliding(rect1, rect2) {
+          return rect1.x < rect2.x + rect2.width &&
+                 rect1.x + rect1.width > rect2.x &&
+                 rect1.y < rect2.y + rect2.height &&
+                 rect1.y + rect1.height > rect2.y;
+        }
+
+        endRound() {
+          if (this.player1.health > this.player2.health) {
+            this.player2.health = 0;
+          } else {
+            this.player1.health = 0;
+          }
+        }
+
+        resizeCanvas() {
+          this.canvas.width = window.innerWidth;
+          this.canvas.height = window.innerHeight;
+          
+          // Adjust player positions based on screen size
+          if (this.player1 && this.player2) {
+            this.player1.x = this.canvas.width * 0.2;
+            this.player2.x = this.canvas.width * 0.8;
+            this.player1.y = this.canvas.height * 0.8;
+            this.player2.y = this.canvas.height * 0.8;
+          }
+        }
+
+        render() {
+          // Clear canvas
+          this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+          
+          // Draw sky gradient
+          const gradient = this.ctx.createLinearGradient(0, 0, 0, this.canvas.height);
+          gradient.addColorStop(0, '#1a1a2e');
+          gradient.addColorStop(1, '#16213e');
+          this.ctx.fillStyle = gradient;
+          this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+          
+          // Draw mountains
+          this.ctx.fillStyle = '#2a2a4a';
+          this.ctx.beginPath();
+          this.ctx.moveTo(0, this.canvas.height * 0.8);
+          this.ctx.lineTo(this.canvas.width * 0.25, this.canvas.height * 0.5);
+          this.ctx.lineTo(this.canvas.width * 0.5, this.canvas.height * 0.8);
+          this.ctx.lineTo(this.canvas.width * 0.75, this.canvas.height * 0.3);
+          this.ctx.lineTo(this.canvas.width, this.canvas.height * 0.8);
+          this.ctx.closePath();
+          this.ctx.fill();
+          
+          // Draw clouds
+          this.ctx.fillStyle = '#3a3a5a';
+          this.drawCloud(this.canvas.width * 0.1, this.canvas.height * 0.2);
+          this.drawCloud(this.canvas.width * 0.3, this.canvas.height * 0.25);
+          this.ctx.fillStyle = '#3a3a5a';
+          this.ctx.beginPath();
+          this.ctx.arc(this.canvas.width * 0.5, this.canvas.height * 0.15, 20, 0, Math.PI * 2);
+          this.ctx.arc(this.canvas.width * 0.7, this.canvas.height * 0.2, 25, 0, Math.PI * 2);
+          this.ctx.fill();
+          
+          // Draw health bars
+          const healthBarWidth = this.canvas.width * 0.3;
+          const healthBarHeight = this.canvas.height * 0.03;
+          const healthBarY = this.canvas.height * 0.05;
+          
+          this.ctx.fillStyle = '#f00';
+          this.ctx.fillRect(this.canvas.width * 0.05, healthBarY, healthBarWidth * (this.player1.health / 100), healthBarHeight);
+          this.ctx.fillStyle = '#00f';
+          this.ctx.fillRect(this.canvas.width * 0.65, healthBarY, healthBarWidth * (this.player2.health / 100), healthBarHeight);
+          
+          // Draw round timer
+          this.ctx.fillStyle = '#fff';
+          this.ctx.font = `${this.canvas.height * 0.04}px Arial`;
+          this.ctx.textAlign = 'center';
+          this.ctx.fillText(Math.ceil(this.state.roundTimer), this.canvas.width/2, healthBarY + healthBarHeight);
+          
+          // Draw players
+          this.drawPlayer(this.player1);
+          this.drawPlayer(this.player2);
+          
+          // Draw hitboxes (debug)
+          if (this.player1.hitbox) {
+            this.ctx.strokeStyle = '#f00';
+            this.ctx.strokeRect(
+              this.player1.hitbox.x,
+              this.player1.hitbox.y,
+              this.player1.hitbox.width,
+              this.player1.hitbox.height
+            );
+          }
+          if (this.player2.hitbox) {
+            this.ctx.strokeStyle = '#00f';
+            this.ctx.strokeRect(
+              this.player2.hitbox.x,
+              this.player2.hitbox.y,
+              this.player2.hitbox.width,
+              this.player2.hitbox.height
+            );
+          }
+
+          // Draw game over screen
+          if (this.state.gameOver) {
+            this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+            this.ctx.fillStyle = '#fff';
+            this.ctx.font = `${this.canvas.height * 0.08}px Arial`;
+            this.ctx.textAlign = 'center';
+            this.ctx.fillText('GAME OVER', this.canvas.width/2, this.canvas.height/2);
+            this.ctx.font = `${this.canvas.height * 0.04}px Arial`;
+            const winner = this.player1.health > 0 ? 'Player 1' : 'Player 2';
+            this.ctx.fillText(`${winner} Wins!`, this.canvas.width/2, this.canvas.height/2 + this.canvas.height * 0.05);
+          }
+
+          // Draw pause screen
+          if (this.state.paused) {
+            this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+            this.ctx.fillStyle = '#fff';
+            this.ctx.font = `${this.canvas.height * 0.08}px Arial`;
+            this.ctx.textAlign = 'center';
+            this.ctx.fillText('PAUSED', this.canvas.width/2, this.canvas.height/2);
+          }
+        }
+
+        drawPlayer(player) {
+          // Draw player with different color when blocking
+          this.ctx.fillStyle = player.blocking ? '#800' : (player.facingRight ? '#f00' : '#00f');
+          
+          // Adjust height and position based on state
+          let height = player.height;
+          let y = player.y;
+          
+          if (player.state === 'crouching') {
+            height = player.height/2;
+            y = player.y + player.height/2;
+          } else if (player.state === 'jumpSquat') {
+            // Slightly compress the player during jump squat
+            height = player.height * 0.9;
+            y = player.y + (player.height - height);
+          }
+          
+          // Draw base player
+          this.ctx.fillRect(player.x, y, player.width, height);
+
+          // Draw attack animations
+          Object.entries(player.attacks).forEach(([type, attack]) => {
+            if (attack.active) {
+              switch (type) {
+                case 'punch':
+                  // Draw fist
+                  this.ctx.fillStyle = '#fff';
+                  const fistX = player.facingRight ? player.x + player.width : player.x;
+                  this.ctx.beginPath();
+                  this.ctx.arc(fistX, y + height * 0.3, 15, 0, Math.PI * 2);
+                  this.ctx.fill();
+                  break;
+                case 'kick':
+                  // Draw leg
+                  this.ctx.fillStyle = '#fff';
+                  const legX = player.facingRight ? player.x + player.width : player.x;
+                  this.ctx.fillRect(legX, y + height * 0.6, 20, 10);
+                  break;
+                case 'slash':
+                  // Draw sword slash effect
+                  this.ctx.strokeStyle = '#fff';
+                  this.ctx.lineWidth = 5;
+                  const slashX = player.facingRight ? player.x + player.width : player.x;
+                  this.ctx.beginPath();
+                  // Draw multiple slash lines for better visibility
+                  for (let i = 0; i < 3; i++) {
+                    const offset = i * 10;
+                    this.ctx.moveTo(slashX, y + height * 0.2 + offset);
+                    this.ctx.lineTo(slashX + (player.facingRight ? 60 : -60), y + height * 0.8 + offset);
+                  }
+                  this.ctx.stroke();
+                  // Add slash particles
+                  for (let i = 0; i < 5; i++) {
+                    const particleX = slashX + (player.facingRight ? Math.random() * 60 : -Math.random() * 60);
+                    const particleY = y + height * 0.2 + Math.random() * (height * 0.6);
+                    this.ctx.fillStyle = '#fff';
+                    this.ctx.beginPath();
+                    this.ctx.arc(particleX, particleY, 2, 0, Math.PI * 2);
+                    this.ctx.fill();
+                  }
+                  break;
+                case 'dust':
+                  // Draw dust particles with more spread
+                  this.ctx.fillStyle = '#fff';
+                  for (let i = 0; i < 8; i++) {
+                    const dustX = player.facingRight ? 
+                      player.x + player.width + Math.random() * 40 : 
+                      player.x - Math.random() * 40;
+                    const dustY = y + height * 0.3 + (Math.random() - 0.5) * height;
+                    this.ctx.beginPath();
+                    this.ctx.arc(dustX, dustY, 4, 0, Math.PI * 2);
+                    this.ctx.fill();
+                  }
+                  // Add dust trail
+                  this.ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+                  const trailX = player.facingRight ? player.x + player.width : player.x;
+                  this.ctx.beginPath();
+                  this.ctx.moveTo(trailX, y + height * 0.3);
+                  this.ctx.lineTo(trailX + (player.facingRight ? 40 : -40), y + height * 0.7);
+                  this.ctx.lineTo(trailX + (player.facingRight ? 20 : -20), y + height * 0.5);
+                  this.ctx.closePath();
+                  this.ctx.fill();
+                  break;
+              }
+            }
+          });
+
+          // Draw projectiles
+          player.projectiles.forEach(projectile => {
+            switch (projectile.type) {
+              case 'fireball':
+                // Draw fireball with glow effect
+                this.ctx.fillStyle = '#f00';
+                this.ctx.beginPath();
+                this.ctx.arc(projectile.x + projectile.width/2, projectile.y + projectile.height/2, 
+                           projectile.width/2, 0, Math.PI * 2);
+                this.ctx.fill();
+                // Add glow
+                this.ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+                this.ctx.beginPath();
+                this.ctx.arc(projectile.x + projectile.width/2, projectile.y + projectile.height/2, 
+                           projectile.width, 0, Math.PI * 2);
+                this.ctx.fill();
+                break;
+              case 'dragon_punch':
+                // Draw dragon punch with energy effect
+                this.ctx.fillStyle = '#f80';
+                this.ctx.fillRect(projectile.x, projectile.y, projectile.width, projectile.height);
+                // Add energy trail
+                this.ctx.fillStyle = 'rgba(255, 136, 0, 0.3)';
+                this.ctx.beginPath();
+                this.ctx.moveTo(projectile.x, projectile.y + projectile.height/2);
+                this.ctx.lineTo(projectile.x - (player.facingRight ? 20 : -20), projectile.y + projectile.height/2);
+                this.ctx.lineTo(projectile.x - (player.facingRight ? 40 : -40), projectile.y);
+                this.ctx.lineTo(projectile.x - (player.facingRight ? 20 : -20), projectile.y + projectile.height/2);
+                this.ctx.fill();
+                break;
+              case 'super':
+                // Draw super move with energy aura
+                this.ctx.fillStyle = '#f0f';
+                this.ctx.fillRect(projectile.x, projectile.y, projectile.width, projectile.height);
+                // Add energy aura
+                this.ctx.fillStyle = 'rgba(255, 0, 255, 0.2)';
+                this.ctx.beginPath();
+                this.ctx.arc(projectile.x + projectile.width/2, projectile.y + projectile.height/2, 
+                           projectile.width, 0, Math.PI * 2);
+                this.ctx.fill();
+                // Add energy particles
+                for (let i = 0; i < 8; i++) {
+                  const angle = (Math.PI * 2 / 8) * i;
+                  const particleX = projectile.x + projectile.width/2 + Math.cos(angle) * projectile.width;
+                  const particleY = projectile.y + projectile.height/2 + Math.sin(angle) * projectile.height;
+                  this.ctx.fillStyle = '#f0f';
+                  this.ctx.beginPath();
+                  this.ctx.arc(particleX, particleY, 5, 0, Math.PI * 2);
+                  this.ctx.fill();
+                }
+                break;
+            }
+          });
+        }
+
+        drawCloud(x, y) {
+          const size = this.canvas.height * 0.03;
+          this.ctx.beginPath();
+          this.ctx.arc(x, y, size, 0, Math.PI * 2);
+          this.ctx.arc(x + size, y, size * 1.2, 0, Math.PI * 2);
+          this.ctx.arc(x + size * 2, y, size, 0, Math.PI * 2);
+          this.ctx.fill();
+        }
+
+        gameLoop() {
+          const currentTime = performance.now() / 1000;
+          const deltaTime = currentTime - this.state.lastTime;
+          this.state.lastTime = currentTime;
+
+          this.update(deltaTime);
+          this.render();
+
+          requestAnimationFrame(() => this.gameLoop());
+        }
+      }
+
+      // Start the game
+      const game = new Game();
+      game.init();
+    </script>
+  </body>
+</html> 
